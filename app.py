@@ -433,8 +433,7 @@ with tab1:
                 marker=dict(size=9, color=colors.get(r["model"], "gray")),
                 hovertemplate=(
                     f"<b>{r['model']}</b><br>"
-                    f"Forecast: ${r['forecast']/1e9:.2f}B<br>"
-                    f"RMSE: ${r.get('rmse', 0)/1e6:.0f}M<extra></extra>"
+                    f"Forecast: ${r['forecast']/1e9:.2f}B<extra></extra>"
                 )
             ))
 
