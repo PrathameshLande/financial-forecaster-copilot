@@ -80,14 +80,29 @@ COMPANY DESCRIPTION:
     return context
 
 
+_NO_KEY_BRIEF = {
+    "headline": "Forecast complete — add GROQ_API_KEY to enable AI analysis",
+    "forecast": "Statistical models ran successfully. AI narrative requires a Groq API key.",
+    "scenarios": "Bear/Base/Bull scenarios computed from historical same-quarter YoY growth.",
+    "signals": "Market signals (news, price, beat rate) collected from yfinance.",
+    "macro": "Macro context requires FRED_API_KEY and AI brief requires GROQ_API_KEY.",
+    "risk": "AI analyst is unavailable — add GROQ_API_KEY to Streamlit secrets to enable it.",
+}
+
+
 def get_auto_brief(company_info, ensemble_result, macro_context, ticker,
                    scenarios=None, signals=None, validation=None):
     """
     Generates a structured analyst brief returned as a dict with 6 sections.
     Each section is one crisp sentence — displayed as cards in the UI.
-    Falls back to a plain string if JSON parsing fails.
+    Falls back gracefully if GROQ_API_KEY is missing or any API call fails.
     """
-    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        print("GROQ_API_KEY not set — returning placeholder brief")
+        return _NO_KEY_BRIEF.copy()
+
+    client = Groq(api_key=api_key)
     context = build_context(company_info, ensemble_result, macro_context, ticker,
                             scenarios=scenarios, signals=signals, validation=validation)
 
@@ -125,17 +140,24 @@ Use exactly these 6 keys. Each value must be one sentence, max 25 words, plain E
     except Exception:
         pass
 
-    # fallback: return a plain string so the UI doesn't crash
-    fallback_response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": context},
-            {"role": "user", "content": "Write a 3-sentence analyst brief. Plain English only."}
-        ],
-        max_tokens=200
-    )
-    return {"headline": "Analysis complete", "forecast": fallback_response.choices[0].message.content,
-            "scenarios": "", "signals": "", "macro": "", "risk": ""}
+    # fallback: plain-text brief if JSON parsing failed — also wrapped in try/except
+    try:
+        fallback_response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": context},
+                {"role": "user", "content": "Write a 3-sentence analyst brief. Plain English only."}
+            ],
+            max_tokens=200
+        )
+        return {
+            "headline": "Analysis complete",
+            "forecast": fallback_response.choices[0].message.content,
+            "scenarios": "", "signals": "", "macro": "", "risk": ""
+        }
+    except Exception as e:
+        print(f"Fallback brief also failed: {e}")
+        return _NO_KEY_BRIEF.copy()
 
 
 def chat_with_analyst(
@@ -156,7 +178,11 @@ def chat_with_analyst(
     if chat_history is None:
         chat_history = []
 
-    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return "AI analyst is unavailable — GROQ_API_KEY is not configured."
+
+    client = Groq(api_key=api_key)
     context = build_context(company_info, ensemble_result, macro_context, ticker,
                             scenarios=scenarios, signals=signals, validation=validation)
 
@@ -164,9 +190,13 @@ def chat_with_analyst(
     messages.extend(chat_history)
     messages.append({"role": "user", "content": user_message})
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=messages,
-        max_tokens=400
-    )
-    return response.choices[0].message.content
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,
+            max_tokens=400
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Chat request failed: {e}")
+        return f"Could not get a response — {e}"

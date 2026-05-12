@@ -6,11 +6,31 @@ import pandas as pd
 load_dotenv()
 
 
+_MACRO_FALLBACK = {
+    "cpi_yoy_pct": "N/A",
+    "fed_rate": "N/A",
+    "jobless_claims": 0,
+    "gdp_growth": "N/A",
+}
+
+
 def get_macro_context():
-    fred = Fred(api_key=os.getenv("FRED_API_KEY"))
+    """
+    Fetch macro indicators from FRED.
+    Returns sensible defaults (N/A) instead of crashing when:
+    - FRED_API_KEY is not set (e.g. Streamlit Cloud without secrets configured)
+    - Any network / API error occurs
+    This way the rest of the pipeline always gets a valid dict.
+    """
+    api_key = os.getenv("FRED_API_KEY")
+    if not api_key:
+        print("FRED_API_KEY not set — returning N/A macro context")
+        return _MACRO_FALLBACK.copy()
 
     try:
-        # CPI - inflation rate
+        fred = Fred(api_key=api_key)
+
+        # CPI — year-over-year inflation
         cpi = fred.get_series("CPIAUCSL").dropna()
         latest_cpi = round(float(cpi.iloc[-1]), 2)
         prev_cpi = round(float(cpi.iloc[-13]), 2)
@@ -24,11 +44,12 @@ def get_macro_context():
         jobless = fred.get_series("ICSA").dropna()
         latest_jobless = int(jobless.iloc[-1])
 
-        # GDP growth
+        # GDP growth (real, annualised)
         gdp = fred.get_series("A191RL1Q225SBEA").dropna()
         latest_gdp = round(float(gdp.iloc[-1]), 2)
 
-        context = {
+        print("Macro context fetched successfully")
+        return {
             "cpi_latest": latest_cpi,
             "cpi_yoy_pct": cpi_yoy,
             "fed_rate": latest_fed_rate,
@@ -36,9 +57,6 @@ def get_macro_context():
             "gdp_growth": latest_gdp,
         }
 
-        print("Macro context fetched successfully")
-        return context
-
     except Exception as e:
         print(f"FRED fetch failed: {e}")
-        return {}
+        return _MACRO_FALLBACK.copy()

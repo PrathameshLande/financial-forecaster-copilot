@@ -528,10 +528,13 @@ with tab1:
 
         # ── Macro environment ─────────────────────────────────────────────
         st.subheader("🌍 Macro Environment")
+        if macro.get("cpi_yoy_pct") == "N/A":
+            st.caption("ℹ️ Macro data unavailable — add `FRED_API_KEY` to your Streamlit secrets to enable this section.")
         mc1, mc2, mc3, mc4 = st.columns(4)
         mc1.metric("CPI Inflation",  f"{macro.get('cpi_yoy_pct', 'N/A')}%", delta="YoY", delta_color="off")
         mc2.metric("Fed Funds Rate", f"{macro.get('fed_rate', 'N/A')}%")
-        mc3.metric("Jobless Claims", f"{macro.get('jobless_claims', 0):,}")
+        jobless_val = macro.get("jobless_claims", 0)
+        mc3.metric("Jobless Claims", f"{jobless_val:,}" if isinstance(jobless_val, int) and jobless_val > 0 else "N/A")
         mc4.metric("GDP Growth",     f"{macro.get('gdp_growth', 'N/A')}%")
 
         # ── AI Analyst Brief ─────────────────────────────────────────────
