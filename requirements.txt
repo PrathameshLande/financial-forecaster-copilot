@@ -1,0 +1,15 @@
+streamlit
+yfinance
+pandas
+numpy
+statsmodels
+prophet
+fredapi
+groq
+python-dotenv
+requests
+beautifulsoup4
+pmdarima
+tbats
+scikit-learn
+plotly
