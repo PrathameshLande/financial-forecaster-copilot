@@ -77,28 +77,14 @@ def run_prophet(df, n_quarters=1):
                 "reason": "sanity check failed - forecast unrealistically high"
             }
 
-        # calculate RMSE on last 4 quarters
-        train_df = prophet_df_clean.iloc[:-4]
-        test_y = prophet_df["y"].values[-4:]
-
-        model_test = Prophet(
-            seasonality_mode="additive",
-            yearly_seasonality=True,
-            weekly_seasonality=False,
-            daily_seasonality=False
-        )
-        model_test.fit(train_df)
-        future_test = model_test.make_future_dataframe(periods=4, freq="QE")
-        forecast_test = model_test.predict(future_test)
-        preds = forecast_test["yhat"].values[-4:]
-        rmse = float(np.sqrt(np.mean((test_y - preds) ** 2)))
-
+        # skip the separate RMSE fit — a second full Prophet fit doubles runtime
+        # and adds nothing beyond what the walk-forward backtest MAPE already measures
         return {
             "model": "Prophet",
             "forecast": forecast,
             "status": "success",
             "reason": None,
-            "rmse": rmse
+            "rmse": None
         }
 
     except Exception as e:

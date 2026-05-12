@@ -190,9 +190,16 @@ with tab1:
             st.stop()
 
         # ── STAGE 3: Walk-forward backtest ────────────────────────────────
-        progress.progress(40, text="Step 3: Running 12-quarter walk-forward backtest...")
-        with st.spinner("Backtesting models (12-quarter walk-forward)..."):
-            backtest_results = run_all_backtests(df, MODEL_REGISTRY)
+        # Cache by ticker + data fingerprint so re-runs on same ticker are instant
+        backtest_cache_key = f"bt_{ticker}_{len(df)}_{int(df['revenue'].sum())}"
+        progress.progress(40, text="Step 3: Running 8-quarter walk-forward backtest...")
+        if backtest_cache_key in st.session_state:
+            backtest_results = st.session_state[backtest_cache_key]
+            print("Backtest loaded from cache")
+        else:
+            with st.spinner("Backtesting models (8-quarter walk-forward)..."):
+                backtest_results = run_all_backtests(df, MODEL_REGISTRY)
+            st.session_state[backtest_cache_key] = backtest_results
 
         # ── STAGE 4: Backtest-weighted ensemble ───────────────────────────
         progress.progress(55, text="Step 4: Building backtest-weighted ensemble...")
@@ -499,32 +506,51 @@ with tab1:
             row = {
                 "Model": r["model"],
                 "Forecast": f"${r['forecast']/1e9:.2f}B" if r["status"] == "success" else "—",
-                "RMSE": f"${r.get('rmse', 0)/1e6:.0f}M" if r.get("rmse") else "—",
                 "Backtest MAPE": f"{bt['mape']:.1f}%" if bt.get("mape") else "—",
                 "Eligible": "✅" if bt.get("eligible") else "❌",
                 "Weight": f"{ensemble['model_weights'].get(r['model'], 0):.1f}%",
                 "Status": "✅" if r["status"] == "success" else "⏭️ Skipped",
             }
             table_data.append(row)
+
+        # add Analyst Consensus row if it was used in the ensemble
+        if "Analyst Consensus" in ensemble.get("model_forecasts", {}):
+            table_data.append({
+                "Model": "📊 Analyst Consensus",
+                "Forecast": f"${ensemble['model_forecasts']['Analyst Consensus']/1e9:.2f}B",
+                "Backtest MAPE": "Market estimate",
+                "Eligible": "✅",
+                "Weight": f"{ensemble['model_weights'].get('Analyst Consensus', 0):.1f}%",
+                "Status": "✅",
+            })
+
         st.dataframe(table_data, use_container_width=True, hide_index=True)
 
-        # ── Validation gates detail ───────────────────────────────────────
-        st.subheader("🔒 Validation Gates (Steps 11–13)")
-        vg1, vg2, vg3 = st.columns(3)
+        # ── Validation gates detail — collapsed by default ────────────────
+        # Shows what the 3 pipeline quality checks found.
+        # All 3 can fail for fast-growing companies (e.g. WMT Q4) where
+        # the models conservatively anchor on long-run history.
         check_icon = lambda p: "✅" if p else "❌"
         cc = validation["consensus_check"]
         eb = validation["error_band_check"]
         cv = validation["convergence_check"]
-        with vg1:
-            st.markdown(f"**{check_icon(cc['passes'])} Step 11: Consensus Anchor**")
-            st.caption(cc["note"])
-        with vg2:
-            st.markdown(f"**{check_icon(eb['passes'])} Step 12: Error Band (3%)**")
-            st.caption(eb["note"])
-        with vg3:
-            conv_icon = {"high": "✅", "moderate": "ℹ️", "low": "❌"}
-            st.markdown(f"**{conv_icon.get(cv['level'], 'ℹ️')} Step 13: Convergence**")
-            st.caption(cv["note"])
+        conv_icon = {"high": "✅", "moderate": "ℹ️", "low": "❌"}
+        gates_label = (
+            "✅ All 3 validation gates passed"
+            if validation["passes_all"]
+            else f"❌ {sum(1 for g in [cc, eb] if not g['passes']) + (1 if cv['level'] == 'low' else 0)} gate(s) failed — click for details"
+        )
+        with st.expander(f"🔒 Validation Gates (Steps 11–13)  ·  {gates_label}", expanded=False):
+            vg1, vg2, vg3 = st.columns(3)
+            with vg1:
+                st.markdown(f"**{check_icon(cc['passes'])} Step 11: Consensus Anchor**")
+                st.caption(cc["note"])
+            with vg2:
+                st.markdown(f"**{check_icon(eb['passes'])} Step 12: Error Band**")
+                st.caption(eb["note"])
+            with vg3:
+                st.markdown(f"**{conv_icon.get(cv['level'], 'ℹ️')} Step 13: Convergence**")
+                st.caption(cv["note"])
 
         # ── Macro environment ─────────────────────────────────────────────
         st.subheader("🌍 Macro Environment")

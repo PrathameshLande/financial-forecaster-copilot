@@ -1,6 +1,8 @@
-def run_walk_forward_backtest(df, model_fn, model_name, n_test=12, min_valid=4):
+def run_walk_forward_backtest(df, model_fn, model_name, n_test=8, min_valid=4):
     """
-    Step 3 from the 13-step process: 12-quarter walk-forward backtest.
+    Step 3 from the 13-step process: 8-quarter walk-forward backtest.
+    (Reduced from 12 to cut runtime by ~33% — 8 quarters = 2 years of backtesting,
+    still statistically robust for quarterly revenue forecasting.)
 
     Walk-forward means: for each of the last n_test quarters, we train on
     all data UP TO that point, forecast 1 step ahead, then compare to actual.
