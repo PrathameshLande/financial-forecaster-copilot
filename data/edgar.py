@@ -16,6 +16,11 @@ def get_cik(ticker):
 
 
 def get_yfinance_quarterly(ticker):
+    """
+    Secondary data source: yfinance quarterly income statement.
+    yfinance derives Q4 from annual - Q1+Q2+Q3, so it fills gaps
+    that EDGAR's direct quarterly filings miss.
+    """
     try:
         stock = yf.Ticker(ticker)
         income = stock.quarterly_income_stmt
@@ -25,10 +30,11 @@ def get_yfinance_quarterly(ticker):
             return pd.DataFrame()
         revenue_row = income.loc["Total Revenue"]
         df = revenue_row.reset_index()
-        df.columns = ["date", "revenue"]
-        df["date"] = pd.to_datetime(df["date"])
-        df["date"] = df["date"].dt.tz_localize(None)
-        df["date"] = df["date"] + pd.offsets.QuarterEnd(0)
+        df.columns = ["date_raw", "revenue"]
+        df["date_raw"] = pd.to_datetime(df["date_raw"])
+        df["date_raw"] = df["date_raw"].dt.tz_localize(None)
+        # snap to nearest calendar quarter-end so dates align with EDGAR
+        df["date"] = df["date_raw"] + pd.offsets.QuarterEnd(0)
         df["frame"] = df["date"].apply(lambda d: f"CY{d.year}Q{d.quarter}-yf")
         df = df.dropna(subset=["revenue"])
         df = df.sort_values("date").reset_index(drop=True)
@@ -39,6 +45,25 @@ def get_yfinance_quarterly(ticker):
 
 
 def get_quarterly_revenue(ticker):
+    """
+    Three-layer revenue assembly:
+
+    Layer 1 — SEC EDGAR XBRL direct: quarterly 10-Q filings (Q1, Q2, Q3).
+              Companies do not file a standalone 10-Q for Q4.
+
+    Layer 2 — yfinance: fills quarters that EDGAR misses. yfinance derives
+              Q4 from annual − (Q1+Q2+Q3), so it covers fiscal-year companies.
+
+    Layer 3 — Fiscal-year-aware Q4 derivation: for each annual filing,
+              find its three quarterly entries by matching the original
+              SEC start/end dates (not calendar-snapped dates).
+              This correctly handles WMT (Jan), AAPL (Sep), MSFT (Jun),
+              NVDA (Jan), and any other non-December fiscal year.
+
+    The old Layer 3 logic used calendar year (df.dt.year == annual.year)
+    which always found the wrong Q1+Q2+Q3 for fiscal-year companies, so
+    Q4 was never calculated for them.
+    """
     headers = {"User-Agent": "forecaster app contact@example.com"}
 
     cik = get_cik(ticker)
@@ -74,8 +99,9 @@ def get_quarterly_revenue(ticker):
         print("Could not find revenue field")
         return None
 
-    quarterly = []
-    annual = []
+    # Parse entries — keep original start/end dates for fiscal year matching
+    quarterly = []   # 10-Q filings: Q1, Q2, Q3
+    annual = []      # 10-K filings: full fiscal year
 
     for entry in revenue_data:
         if "start" not in entry or "end" not in entry:
@@ -86,58 +112,100 @@ def get_quarterly_revenue(ticker):
 
         if 85 <= duration <= 99:
             quarterly.append({
-                "date": entry["end"],
+                "start_raw": start,   # original fiscal quarter start
+                "end_raw": end,       # original fiscal quarter end
+                "date": end + pd.offsets.QuarterEnd(0),   # snapped to calendar
                 "revenue": entry["val"],
                 "frame": entry.get("frame", f"Q-{entry['end']}")
             })
         elif 360 <= duration <= 370:
             annual.append({
-                "year": end.year,
+                "start_raw": start,   # fiscal year start
+                "end_raw": end,       # fiscal year end
                 "annual_revenue": entry["val"]
             })
 
-    df_edgar = pd.DataFrame(quarterly)
-    df_edgar["date"] = pd.to_datetime(df_edgar["date"])
-    df_edgar["date"] = df_edgar["date"] + pd.offsets.QuarterEnd(0)
-    df_edgar = df_edgar.sort_values("date")
-    df_edgar = df_edgar.drop_duplicates(subset="date", keep="last")
-    print(f"Layer 1 - EDGAR direct: {len(df_edgar)} quarters")
+    if not quarterly:
+        print("No quarterly entries found in EDGAR")
+        df_edgar = pd.DataFrame(columns=["start_raw", "end_raw", "date", "revenue", "frame"])
+    else:
+        df_edgar = pd.DataFrame(quarterly)
+        df_edgar = df_edgar.sort_values("date")
+        # deduplicate by calendar-snapped date — keep the highest revenue
+        # (some companies refile; the latest/highest is most accurate)
+        df_edgar = df_edgar.sort_values("revenue", ascending=False)
+        df_edgar = df_edgar.drop_duplicates(subset="date", keep="first")
+        df_edgar = df_edgar.sort_values("date").reset_index(drop=True)
+        print(f"Layer 1 - EDGAR direct: {len(df_edgar)} quarters")
 
+    # ── Layer 2: yfinance fill ────────────────────────────────────────────
+    # yfinance Q4 data fills the most common gap from Layer 1
     df_yf = get_yfinance_quarterly(ticker)
     if not df_yf.empty:
-        edgar_dates = set(df_edgar["date"].dt.date)
+        edgar_dates = set(df_edgar["date"].dt.date) if not df_edgar.empty else set()
         missing_yf = df_yf[~df_yf["date"].dt.date.isin(edgar_dates)]
         if not missing_yf.empty:
             print(f"Layer 2 - yfinance filled: {len(missing_yf)} quarters")
-            df_edgar = pd.concat([df_edgar, missing_yf], ignore_index=True)
-            df_edgar = df_edgar.sort_values("date")
+            # add placeholder raw columns so concat works cleanly
+            missing_yf = missing_yf.copy()
+            if "start_raw" not in missing_yf.columns:
+                missing_yf["start_raw"] = None
+            if "end_raw" not in missing_yf.columns:
+                missing_yf["end_raw"] = missing_yf.get("date_raw", missing_yf["date"])
+            df_edgar = pd.concat([df_edgar, missing_yf[["start_raw", "end_raw", "date", "revenue", "frame"]]],
+                                 ignore_index=True)
+            df_edgar = df_edgar.sort_values("date").reset_index(drop=True)
 
+    # ── Layer 3: fiscal-year-aware Q4 derivation ──────────────────────────
+    # For each annual 10-K, find its Q1+Q2+Q3 by matching the original
+    # SEC filing dates — not calendar years. This is the key fix for
+    # companies like WMT/AAPL/MSFT whose fiscal year ≠ calendar year.
     if annual:
-        df_annual = pd.DataFrame(annual)
-        df_annual = df_annual.drop_duplicates(subset="year", keep="last")
-        annual_lookup = dict(zip(df_annual["year"], df_annual["annual_revenue"]))
+        # deduplicate annual entries: keep last filed per fiscal year end
+        df_ann = pd.DataFrame(annual).drop_duplicates(subset="end_raw", keep="last")
+        existing_dates = set(df_edgar["date"].dt.date) if not df_edgar.empty else set()
 
         q4_rows = []
-        for year, annual_rev in annual_lookup.items():
-            year_data = df_edgar[df_edgar["date"].dt.year == year]
-            has_q4 = any(year_data["date"].dt.month == 12)
-            if has_q4:
+        for _, ann in df_ann.iterrows():
+            fy_start = ann["start_raw"]
+            fy_end = ann["end_raw"]
+            ann_rev = ann["annual_revenue"]
+
+            # The fiscal Q4's calendar-snapped date
+            q4_date = fy_end + pd.offsets.QuarterEnd(0)
+
+            # Skip if we already have this quarter
+            if q4_date.date() in existing_dates:
                 continue
-            q123 = year_data[year_data["date"].dt.month != 12]
-            if len(q123) == 3:
-                q4_revenue = annual_rev - q123["revenue"].sum()
-                q4_rows.append({
-                    "date": pd.Timestamp(f"{year}-12-31"),
-                    "revenue": q4_revenue,
-                    "frame": f"CY{year}Q4-calc"
-                })
+
+            # Find Q1+Q2+Q3: quarters whose original end date falls
+            # strictly inside [fy_start, fy_end)
+            if df_edgar.empty or "end_raw" not in df_edgar.columns:
+                continue
+
+            end_raw_col = pd.to_datetime(df_edgar["end_raw"], errors="coerce")
+            mask = (end_raw_col >= fy_start) & (end_raw_col < fy_end)
+            fy_quarters = df_edgar[mask]
+
+            if len(fy_quarters) == 3:
+                q4_rev = ann_rev - fy_quarters["revenue"].sum()
+                if q4_rev > 0:  # sanity check
+                    q4_rows.append({
+                        "start_raw": None,
+                        "end_raw": fy_end,
+                        "date": q4_date,
+                        "revenue": q4_rev,
+                        "frame": f"CY{fy_end.year}Q4-calc"
+                    })
 
         if q4_rows:
             df_q4 = pd.DataFrame(q4_rows)
             print(f"Layer 3 - calculated Q4s: {len(df_q4)} quarters")
             df_edgar = pd.concat([df_edgar, df_q4], ignore_index=True)
 
+    # ── Final cleanup ─────────────────────────────────────────────────────
     df_final = df_edgar.sort_values("date").reset_index(drop=True)
+    df_final = df_final.drop_duplicates(subset="date", keep="last")
 
     def clean_frame(row):
         if str(row["frame"]).startswith("Q-"):
@@ -146,7 +214,6 @@ def get_quarterly_revenue(ticker):
         return row["frame"]
 
     df_final["frame"] = df_final.apply(clean_frame, axis=1)
+    df_final = df_final[["date", "revenue", "frame"]].copy()
     print(f"Final dataset: {len(df_final)} quarters")
     return df_final
-    
-
