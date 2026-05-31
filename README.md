@@ -2,7 +2,7 @@
 
 A Streamlit app that forecasts next-quarter revenue for any publicly traded US company using a 13-step ensemble pipeline, 10 statistical models, and an AI analyst powered by Llama 3.3 (via Groq's free tier).
 
-**Live demo:** *(add your Streamlit Community Cloud URL here)*
+**Live demo:** *https://financial-forecaster-copilot-4hkeaa79vbmsazh2rtr6qm.streamlit.app/*
 
 ---
 
